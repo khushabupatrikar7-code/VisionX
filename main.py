@@ -1,3 +1,4 @@
+import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 app = FastAPI()
@@ -14,6 +15,13 @@ async def websocket_stream(websocket: WebSocket):
         while True:
             data = await websocket.receive_text()
             print(f"Received: {data}")
-            await websocket.send_text(f"echo: {data}")
+
+            # Fake AI response for now — real YOLO plugs in here later
+            fake_response = {
+                "type": "detection_result",
+                "action": "speak",
+                "text": "chair detected, 2 meters ahead"
+            }
+            await websocket.send_text(json.dumps(fake_response))
     except WebSocketDisconnect:
         print("Glasses disconnected.")
