@@ -1,1 +1,1 @@
-# VisionX
+Privacy first AI smart glasses powered by ESP 32 S3 cam
