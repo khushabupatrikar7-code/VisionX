@@ -46,6 +46,28 @@ def run_scene_description(image_bytes: bytes) -> str:
     response = requests.post(OLLAMA_URL, json=payload)
     return response.json()["response"]
 
+def run_video_description(start_bytes: bytes, end_bytes: bytes) -> str:
+    start_desc = describe_frame_short(start_bytes)
+    end_desc = describe_frame_short(end_bytes)
+    return f"At first: {start_desc} Then: {end_desc}"
+
+
+def describe_frame_short(image_bytes: bytes) -> str:
+    frame = decode_frame(image_bytes)
+    _, buffer = cv2.imencode('.jpg', frame)
+    image_b64 = base64.b64encode(buffer).decode('utf-8')
+
+    payload = {
+        "model": "moondream",
+        "prompt": "Describe this image in one short sentence, under 12 words.",
+        "images": [image_b64],
+        "stream": False,
+        "keep_alive": "30m",
+        "options": {"num_predict": 30}
+    }
+    response = requests.post(OLLAMA_URL, json=payload)
+    return response.json()["response"].strip()
+
 
 @app.get("/")
 def read_root():
@@ -64,16 +86,18 @@ async def websocket_stream(websocket: WebSocket):
             action = await websocket.receive_text()
             print(f"Action requested: {action}")
 
-            # Then the actual camera frame
-            image_bytes = await websocket.receive_bytes()
-
-            if action == "read_text":
-                result_text = await loop.run_in_executor(executor, run_ocr, image_bytes)
-            elif action == "describe_scene":
-                result_text = await loop.run_in_executor(executor, run_scene_description, image_bytes)
+            if action == "describe_video":
+                start_bytes = await websocket.receive_bytes()
+                end_bytes = await websocket.receive_bytes()
+                result_text = await loop.run_in_executor(executor, run_video_description, start_bytes, end_bytes)
             else:
-                result_text = "Unknown action"
-
+                image_bytes = await websocket.receive_bytes()
+                if action == "read_text":
+                    result_text = await loop.run_in_executor(executor, run_ocr, image_bytes)
+                elif action == "describe_scene":
+                    result_text = await loop.run_in_executor(executor, run_scene_description, image_bytes)
+                else:
+                    result_text = "Unknown action"
             response = {
                 "type": action,
                 "action": "speak",
