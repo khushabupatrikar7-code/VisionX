@@ -13,7 +13,6 @@ app = FastAPI()
 ocr_reader = easyocr.Reader(['en'])
 OLLAMA_URL = "http://localhost:11434/api/generate"
 
-# Blocking AI work runs here so it never freezes the WebSocket connection
 executor = ThreadPoolExecutor(max_workers=2)
 
 
@@ -28,28 +27,6 @@ def run_ocr(image_bytes: bytes) -> str:
     if not results:
         return "No text found"
     return " ".join([text for (_, text, _) in results])
-
-
-def run_scene_description(image_bytes: bytes) -> str:
-    frame = decode_frame(image_bytes)
-    _, buffer = cv2.imencode('.jpg', frame)
-    image_b64 = base64.b64encode(buffer).decode('utf-8')
-
-    payload = {
-        "model": "moondream",
-        "prompt": "Describe this image in detail. Include: the person's apparent gender, any accessories like glasses or jewelry, hair style and color, clothing and its colors, facial expression, and what they appear to be doing. Also describe the background and any objects visible.",
-        "images": [image_b64],
-        "stream": False,
-        "keep_alive": "30m",
-        "options": {"num_predict": 150}
-    }
-    response = requests.post(OLLAMA_URL, json=payload)
-    return response.json()["response"]
-
-def run_video_description(start_bytes: bytes, end_bytes: bytes) -> str:
-    start_desc = describe_frame_short(start_bytes)
-    end_desc = describe_frame_short(end_bytes)
-    return f"At first: {start_desc} Then: {end_desc}"
 
 
 def describe_frame_short(image_bytes: bytes) -> str:
@@ -69,6 +46,29 @@ def describe_frame_short(image_bytes: bytes) -> str:
     return response.json()["response"].strip()
 
 
+def run_scene_description(image_bytes: bytes) -> str:
+    frame = decode_frame(image_bytes)
+    _, buffer = cv2.imencode('.jpg', frame)
+    image_b64 = base64.b64encode(buffer).decode('utf-8')
+
+    payload = {
+        "model": "moondream",
+        "prompt": "Describe this image in detail. Include: the person's apparent gender, any accessories like glasses or jewelry, hair style and color, clothing and its colors, facial expression, and what they appear to be doing. Also describe the background and any objects visible.",
+        "images": [image_b64],
+        "stream": False,
+        "keep_alive": "30m",
+        "options": {"num_predict": 150}
+    }
+    response = requests.post(OLLAMA_URL, json=payload)
+    return response.json()["response"]
+
+
+def run_video_description(start_bytes: bytes, end_bytes: bytes) -> str:
+    start_desc = describe_frame_short(start_bytes)
+    end_desc = describe_frame_short(end_bytes)
+    return f"At first: {start_desc} Then: {end_desc}"
+
+
 @app.get("/")
 def read_root():
     return {"message": "Vision X backend is alive"}
@@ -82,7 +82,6 @@ async def websocket_stream(websocket: WebSocket):
 
     try:
         while True:
-            # Firmware sends this first: "describe_scene" (short press) or "read_text" (long press)
             action = await websocket.receive_text()
             print(f"Action requested: {action}")
 
@@ -90,6 +89,32 @@ async def websocket_stream(websocket: WebSocket):
                 start_bytes = await websocket.receive_bytes()
                 end_bytes = await websocket.receive_bytes()
                 result_text = await loop.run_in_executor(executor, run_video_description, start_bytes, end_bytes)
+                response = {"type": "describe_video", "action": "speak", "text": result_text}
+                await websocket.send_text(json.dumps(response))
+
+            elif action == "start_recording":
+                print("Recording started")
+                while True:
+                    sub_action = await websocket.receive_text()
+
+                    if sub_action == "stop_recording":
+                        print("Recording stopped")
+                        await websocket.send_text(json.dumps({
+                            "type": "recording_stopped",
+                            "action": "speak",
+                            "text": "Recording stopped"
+                        }))
+                        break
+
+                    elif sub_action == "live_frame":
+                        frame_bytes = await websocket.receive_bytes()
+                        description = await loop.run_in_executor(executor, describe_frame_short, frame_bytes)
+                        await websocket.send_text(json.dumps({
+                            "type": "live_update",
+                            "action": "speak",
+                            "text": description
+                        }))
+
             else:
                 image_bytes = await websocket.receive_bytes()
                 if action == "read_text":
@@ -98,12 +123,8 @@ async def websocket_stream(websocket: WebSocket):
                     result_text = await loop.run_in_executor(executor, run_scene_description, image_bytes)
                 else:
                     result_text = "Unknown action"
-            response = {
-                "type": action,
-                "action": "speak",
-                "text": result_text
-            }
-            await websocket.send_text(json.dumps(response))
+                response = {"type": action, "action": "speak", "text": result_text}
+                await websocket.send_text(json.dumps(response))
 
     except WebSocketDisconnect:
         print("Glasses disconnected.")
